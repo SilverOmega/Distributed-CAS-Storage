@@ -3,7 +3,6 @@ package p2p
 import (
 	"fmt"
 	"net"
-	"sync"
 )
 
 // TCPPeer represents the remote node over a TCP established connection.
@@ -22,25 +21,36 @@ func NewTCPPeer(conn net.Conn, outbound bool) *TCPPeer {
 	}
 }
 
+// Close implement peers interface
+func (p *TCPPeer) Close() error {
+	return p.conn.Close()
+}
+
 type TCPTransportOpts struct {
 	ListenAddr    string
 	HandShakeFunc HandShakeFunc
 	Decoder       Decoder
+	OnPeer        func(Peer) error
 }
 type TCPTransport struct {
 	TCPTransportOpts
 	listener net.Listener
-
-	mu    sync.RWMutex
-	peers map[net.Addr]Peer
+	rpcch    chan RPC
 }
 
 func NewTCPTransport(opts TCPTransportOpts) *TCPTransport {
 	return &TCPTransport{
 		TCPTransportOpts: opts,
+		rpcch:            make(chan RPC),
 	}
 }
 
+// we can read from this channel and we can't send to channel
+// Consume implements the Tranport interface, which will return read-only channel
+// for reading the incoming messages received from another peer in the network.
+func (t *TCPTransport) Consume() <-chan RPC {
+	return t.rpcch
+}
 func (t *TCPTransport) ListenAndAccept() error {
 	var err error
 	t.listener, err = net.Listen("tcp", t.ListenAddr)
@@ -64,19 +74,33 @@ func (t *TCPTransport) acceptLoop() {
 type Temp struct{}
 
 func (t *TCPTransport) handelConn(conn net.Conn) {
+	var err error
+	defer func() {
+		fmt.Printf("Dropping Peer Connection: %s", err)
+		conn.Close()
+	}()
 	peer := NewTCPPeer(conn, true)
+
 	if err := t.HandShakeFunc(peer); err != nil {
 		conn.Close()
 		fmt.Printf("TCP HandShakeError: %s\n", err)
 		return
 	}
-	msg := &Message{}
-	for {
-		if err := t.Decoder.Decode(conn, msg); err != nil {
-			fmt.Printf("TCP Error: %s\n", err)
-			continue
+	// if somebody provide this function then we call it, and vice versa
+	if t.OnPeer != nil {
+		if err = t.OnPeer(peer); err != nil {
+			return
 		}
-		msg.From = conn.RemoteAddr()
-		fmt.Printf("message: %+v\n", msg)
+	}
+	rpc := RPC{}
+	for {
+		err := t.Decoder.Decode(conn, &rpc)
+		if err != nil {
+			//fmt.Printf("TCP Read Error: %s\n", err)
+			//continue
+			return
+		}
+		rpc.From = conn.RemoteAddr()
+		t.rpcch <- rpc
 	}
 }
