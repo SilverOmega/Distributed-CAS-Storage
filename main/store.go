@@ -26,7 +26,6 @@ func CASPathTransformFunc(key string) PathKey {
 		Pathname:    strings.Join(paths, "/"),
 		OriginalKey: hashStr,
 	}
-	//return strings.Join(paths, "/")
 }
 
 type PathTransformFunc func(string) PathKey
